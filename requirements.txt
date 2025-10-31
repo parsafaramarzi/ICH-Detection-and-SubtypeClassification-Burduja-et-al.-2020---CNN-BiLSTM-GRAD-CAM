@@ -1,0 +1,12 @@
+numpy
+pandas
+tqdm
+matplotlib
+scikit-learn
+scikit-image
+opencv-python
+nibabel
+torch>=1.13
+torchvision
+pytorch-gradcam
+tensorboard
