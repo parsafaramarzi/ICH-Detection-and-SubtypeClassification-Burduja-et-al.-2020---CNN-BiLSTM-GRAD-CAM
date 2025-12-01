@@ -1,4 +1,3 @@
-"""
 # ICH-Detection-and-SubtypeClassification-Burduja-et-al.-2020---CNN-BiLSTM-GRAD-CAM
 
 **Note:** This is a community implementation/fork of the architecture described in the paper. The **official repository** is maintained by the authors at: [https://github.com/warchildmd/ihd](https://github.com/warchildmd/ihd).
