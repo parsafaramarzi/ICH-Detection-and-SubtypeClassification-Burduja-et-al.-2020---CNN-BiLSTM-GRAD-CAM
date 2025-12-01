@@ -1,4 +1,3 @@
-"""
 # Accurate and Efficient Intracranial Hemorrhage (ICH) Detection and Subtype Classification
 
 This repository implements the architecture proposed in the paper **"Accurate and Efficient Intracranial Hemorrhage Detection and Subtype Classification in 3D CT Scans with Convolutional and Long Short-Term Memory Neural Networks"** by Burduja et al. (2020).
