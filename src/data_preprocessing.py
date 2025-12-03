@@ -93,7 +93,6 @@ def data_load(patient_id, target_size, label_dir = "data/", data_dir = "data/ct_
 
     Slice_Counts = volume.shape[2]
     label_rows_count = patient_labels.shape[0]
-    print(f"Patient ID: {patient_id}, OG Slices in volume: {Slice_Counts}, OG Rows in labels: {label_rows_count}")
     if Slice_Counts != label_rows_count:
         raise ValueError(f"Warning: Slice count ({Slice_Counts}) and label rows count ({label_rows_count}) do not match.")
     
@@ -126,7 +125,13 @@ def data_load(patient_id, target_size, label_dir = "data/", data_dir = "data/ct_
 
     volume_tensor = torch.from_numpy(np.stack(processed_slices)).float()
     labels_tensor = torch.from_numpy(labels_matrix_raw.copy()).float()
-    
+    print("-"*80)
+    print(f"Patient ID: {patient_id}, total number of slices and labels rows from {Slice_Counts},{label_rows_count} to {volume_tensor.shape[0]},{labels_tensor.shape[0]}")
+    print(f"CT_Scan Shape: {volume_tensor.shape}")
+    print(f"Labels Shape: {labels_tensor.shape}")
+    print("-"*80)
+
+
     return volume_tensor, labels_tensor
 
 if __name__ == "__main__":
@@ -139,8 +144,4 @@ if __name__ == "__main__":
     DISPLAY_SLICE_INDEX = 7
 
     volume_tensor, labels_tensor = data_load(PATIENT_ID, TARGET_SIZE, LABEL_DIR, DATA_DIR, num_slices=NUM_SLICES, transform_list=TRANSFORM_LIST)
-    print(labels_tensor)
-    print(f"Patient ID: {PATIENT_ID}, Current Slices in volume: {volume_tensor.shape[0]}, Current Rows in labels: {labels_tensor.shape[0]}")
     display_slice(volume_tensor, labels_tensor, DISPLAY_SLICE_INDEX, denormalize=False)
-    print(f"CT_Scan Shape: {volume_tensor.shape}")
-    print(f"Labels Shape: {labels_tensor.shape}")
