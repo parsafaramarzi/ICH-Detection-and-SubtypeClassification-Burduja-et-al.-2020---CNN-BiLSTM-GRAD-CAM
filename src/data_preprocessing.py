@@ -6,6 +6,52 @@ import cv2
 import pandas as pd
 import matplotlib.pyplot as plt
 import albumentations as A
+from typing import Union
+
+def determine_optimal_num_slices(
+    data_source: Union[str, pd.DataFrame], 
+    patient_id_col: str, 
+    slice_count_col: str
+) -> int:
+ 
+    if isinstance(data_source, str):
+        try:
+            master_df = pd.read_csv(data_source)
+            print(f"Successfully loaded DataFrame from path: {data_source}")
+        except FileNotFoundError:
+            print(f"Error: CSV file not found at path: {data_source}")
+            return 0
+        except Exception as e:
+            print(f"Error loading CSV file: {e}")
+            return 0
+    elif isinstance(data_source, pd.DataFrame):
+        master_df = data_source
+    else:
+        print("Error: data_source must be a file path (str) or a Pandas DataFrame.")
+        return 0
+
+
+    if master_df.empty:
+        print("Warning: Input DataFrame is empty. Returning 0 slices.")
+        return 0
+
+    if slice_count_col not in master_df.columns or patient_id_col not in master_df.columns:
+        print(f"Error: Missing required columns in DataFrame. Need '{patient_id_col}' and '{slice_count_col}'.")
+        return 0
+        
+    patient_slice_counts = master_df.groupby(patient_id_col)[slice_count_col].max()
+
+    if patient_slice_counts.empty:
+        print(f"Error: Could not extract slice counts after grouping by '{patient_id_col}'.")
+        return 0
+        
+    min_slices = patient_slice_counts.min()
+
+    print(f"Found {len(patient_slice_counts)} unique patient scans.")
+    print(f"Maximum total slice count observed: {patient_slice_counts.max()}")
+    print(f"The optimal (minimum) total number of slices to use for consistent sampling is: {min_slices}")
+
+    return int(min_slices)
 
 def display_slice(volume, labels, index, denormalize=True):
     N = volume.shape[0]

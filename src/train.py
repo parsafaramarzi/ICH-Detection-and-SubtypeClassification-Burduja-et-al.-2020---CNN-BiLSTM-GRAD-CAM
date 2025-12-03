@@ -2,9 +2,10 @@ import os, torch, torch.nn.functional as F, torch.optim as optim, numpy as np, p
 from torch.utils.data import DataLoader, Dataset
 from sklearn.model_selection import train_test_split 
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_recall_fscore_support, confusion_matrix
-from data_preprocessing import data_load
+from data_preprocessing import data_load, determine_optimal_num_slices
 from model import FullModel 
 from utils import append_to_csv_log, ensure_directory_exists, get_next_batch_log_filename, get_next_epoch_log_filename
+from gpu_log_redirector import DualLogger
 
 class HemorrhageDataset(Dataset):
     def __init__(self, patient_ids, target_size, label_dir, data_dir, num_slices, transform_list):
@@ -31,8 +32,8 @@ class HemorrhageDataset(Dataset):
         )
         return volume, labels
 
-def weighted_bce_loss(logits, targets, device):
-    WEIGHTS = torch.tensor([2., 2., 2., 2., 2., 4.], dtype=torch.float32).to(device)
+def weighted_bce_loss(logits, targets, device, weights=[2., 2., 2., 2., 2., 4.]):
+    WEIGHTS = torch.tensor(weights, dtype=torch.float32).to(device)
     loss = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
     return (loss * WEIGHTS).mean()
 
@@ -51,7 +52,7 @@ def load_checkpoint(checkpoint, model, optimizer):
     print(f"Loaded checkpoint from {checkpoint}")
     return checkpoint_data['Epoch'] + 1
 
-def train_one_epoch(epoch, model, loader, optimizer, device, aux_loss_weight, batch_log_filepath):
+def train_one_epoch(epoch, model, loader, optimizer, device, aux_loss_weight, batch_log_filepath, weights=[2., 2., 2., 2., 2., 4.]):
     model.train(); print(f"\n--- Epoch {epoch} Training Started ---")
     for i, (images, labels) in enumerate(loader):
         images = images.to(device)
@@ -64,8 +65,8 @@ def train_one_epoch(epoch, model, loader, optimizer, device, aux_loss_weight, ba
         scan_labels_preds_flat = bilstm_labels_preds.view(-1, 6)
         labels_flat = labels.view(-1, 6)
 
-        primary_loss = weighted_bce_loss(scan_labels_preds_flat, labels_flat, device)
-        auxiliary_loss = weighted_bce_loss(cnn_labels_preds_flat, labels_flat, device)
+        primary_loss = weighted_bce_loss(scan_labels_preds_flat, labels_flat, device, weights)
+        auxiliary_loss = weighted_bce_loss(cnn_labels_preds_flat, labels_flat, device, weights)
         total_loss = primary_loss + aux_loss_weight * auxiliary_loss
         total_loss.backward()
         optimizer.step()
@@ -93,7 +94,7 @@ def train_one_epoch(epoch, model, loader, optimizer, device, aux_loss_weight, ba
         ]
         append_to_csv_log(batch_log_filepath, Log_Header, log_data)
 
-def test_one_epoch(epoch, model, loader, device, aux_loss_weight, epoch_log_filepath):
+def test_one_epoch(epoch, model, loader, device, aux_loss_weight, epoch_log_filepath, weights=[2., 2., 2., 2., 2., 4.]):
     model.eval(); print(f"\n--- Epoch {epoch} Testing ---")
     
     # For Patient-Level Macro AUC (Any hemorrhage present)
@@ -122,8 +123,8 @@ def test_one_epoch(epoch, model, loader, device, aux_loss_weight, epoch_log_file
             scan_labels_preds_flat = s_log.view(-1, 6)
             labels_flat = labels.view(-1, 6)
 
-            primary_loss = weighted_bce_loss(scan_labels_preds_flat, labels_flat, device)
-            auxiliary_loss = weighted_bce_loss(cnn_labels_preds_flat, labels_flat, device)
+            primary_loss = weighted_bce_loss(scan_labels_preds_flat, labels_flat, device, weights)
+            auxiliary_loss = weighted_bce_loss(cnn_labels_preds_flat, labels_flat, device, weights)
             total_loss = primary_loss + aux_loss_weight * auxiliary_loss
 
             total_loss_accum += total_loss.item()
@@ -244,56 +245,61 @@ if __name__ == "__main__":
     np.random.seed(SEED)
     torch.manual_seed(SEED)
 
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    print(f"Starting training script on {device}")
-    
-    DATA_ROOT = "data/"
-    MASTER_CSV = os.path.join(DATA_ROOT, "hemorrhage_diagnosis_raw_ct.csv")
-    CT_SCANS_DIR = os.path.join(DATA_ROOT, "ct_scans")
-    BATCH_SIZE = 2
-    IMG_SIZE = 256
-    NUM_SLICES = 16
-    EPOCHS = 10
-    LR = 1e-4
-    AUXILIARY_LOSS_WEIGHT = 0.5
-    CHECKPOINT_DIR = "checkpoints" 
-    RESUME_CHECKPOINT = None
     LOG_DIR = "outputs/logs"
+    with DualLogger(os.path.join(LOG_DIR, "training_run.log")):
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        print(f"Starting training script on {device}")
+    
+        DATA_ROOT = "data/"
+        MASTER_CSV = os.path.join(DATA_ROOT, "hemorrhage_diagnosis_raw_ct.csv")
+        CT_SCANS_DIR = os.path.join(DATA_ROOT, "ct_scans")
+        BATCH_SIZE = 1
+        IMG_SIZE = 256
+        TEST_SPLIT_RATIO = 0.3
+        WEIGHTS = [4.0, 1.5, 5.0, 1.0, 2.0, 4.0]
+        EPOCHS = 10
+        LR = 1e-4
+        AUXILIARY_LOSS_WEIGHT = 0.5
+        CHECKPOINT_DIR = "checkpoints" 
+        RESUME_CHECKPOINT = None
 
     
-    TRANSFORM_TRAIN = ["rotate", "flip", "scale", "shift", "brightness"]
-    TRANSFORM_TEST = [] 
+        TRANSFORM_TRAIN = ["rotate", "flip", "scale", "shift", "brightness"]
+        TRANSFORM_TEST = [] 
 
-    print("Loading and splitting master labels...")
-    full_df = pd.read_csv(MASTER_CSV)
-    unique_ids = full_df['PatientNumber'].unique() 
-    train_ids, test_ids = train_test_split(unique_ids, test_size=0.2, random_state=SEED)
-    print(f"Training Patients: {len(train_ids)}, Test Patients: {len(test_ids)}")
+        print("Loading and splitting master labels...")
+        full_df = pd.read_csv(MASTER_CSV)
+        unique_ids = full_df['PatientNumber'].unique() 
+        train_ids, test_ids = train_test_split(unique_ids, test_size= TEST_SPLIT_RATIO, random_state=SEED)
+        print(f"Training Patients: {len(train_ids)}, Test Patients: {len(test_ids)}")
+
+        NUM_SLICES = determine_optimal_num_slices(full_df, patient_id_col="PatientNumber", slice_count_col="SliceNumber")
+        print(f"Using {NUM_SLICES} slices per scan based on data analysis.")
     
-    print("Initializing Datasets...")
-    train_ds = HemorrhageDataset(train_ids, (IMG_SIZE, IMG_SIZE), DATA_ROOT, CT_SCANS_DIR, NUM_SLICES, TRANSFORM_TRAIN)
-    test_ds = HemorrhageDataset(test_ids, (IMG_SIZE, IMG_SIZE), DATA_ROOT, CT_SCANS_DIR, NUM_SLICES, TRANSFORM_TEST)
-    train_loader = DataLoader(train_ds, BATCH_SIZE, shuffle=True, num_workers=2)
-    test_loader = DataLoader(test_ds, 1, shuffle=False, num_workers=2)
+        print("Initializing Datasets...")
+        train_ds = HemorrhageDataset(train_ids, (IMG_SIZE, IMG_SIZE), DATA_ROOT, CT_SCANS_DIR, NUM_SLICES, TRANSFORM_TRAIN)
+        test_ds = HemorrhageDataset(test_ids, (IMG_SIZE, IMG_SIZE), DATA_ROOT, CT_SCANS_DIR, NUM_SLICES, TRANSFORM_TEST)
+        train_loader = DataLoader(train_ds, BATCH_SIZE, shuffle=True, num_workers=2)
+        test_loader = DataLoader(test_ds, 1, shuffle=False, num_workers=2)
 
-    print("Initializing FullModel...")
-    model = FullModel(cnn_pretrained=True)
-    model.to(device)
-    optimizer = optim.AdamW(model.parameters(), lr=LR)
-    print("Model ready.")
+        print("Initializing FullModel...")
+        model = FullModel(cnn_pretrained=True)
+        model.to(device)
+        optimizer = optim.AdamW(model.parameters(), lr=LR)
+        print("Model ready.")
 
-    start_epoch = 1
-    if RESUME_CHECKPOINT: start_epoch = load_checkpoint(RESUME_CHECKPOINT, model, optimizer)
+        start_epoch = 1
+        if RESUME_CHECKPOINT: start_epoch = load_checkpoint(RESUME_CHECKPOINT, model, optimizer)
 
-    ensure_directory_exists(LOG_DIR)
+        ensure_directory_exists(LOG_DIR)
     
-    TRAIN_BATCH_LOG_FILEPATH = get_next_batch_log_filename(LOG_DIR)
-    TEST_EPOCH_LOG_FILEPATH = get_next_epoch_log_filename(LOG_DIR)
-    print(f"Batch logs will be saved to: {TRAIN_BATCH_LOG_FILEPATH}")
-    print(f"Epoch summary logs will be saved to: {TEST_EPOCH_LOG_FILEPATH}")
+        TRAIN_BATCH_LOG_FILEPATH = get_next_batch_log_filename(LOG_DIR)
+        TEST_EPOCH_LOG_FILEPATH = get_next_epoch_log_filename(LOG_DIR)
+        print(f"Batch logs will be saved to: {TRAIN_BATCH_LOG_FILEPATH}")
+        print(f"Epoch summary logs will be saved to: {TEST_EPOCH_LOG_FILEPATH}")
 
-    for epoch in range(start_epoch, EPOCHS + 1):
-        train_one_epoch(epoch, model, train_loader, optimizer, device, AUXILIARY_LOSS_WEIGHT, TRAIN_BATCH_LOG_FILEPATH)
-        test_one_epoch(epoch, model, test_loader, device, AUXILIARY_LOSS_WEIGHT, TEST_EPOCH_LOG_FILEPATH) 
-        save_checkpoint(epoch, model, optimizer, CHECKPOINT_DIR)
-    print(f"\nTraining complete after {EPOCHS} epochs.")
+        for epoch in range(start_epoch, EPOCHS + 1):
+            train_one_epoch(epoch, model, train_loader, optimizer, device, AUXILIARY_LOSS_WEIGHT, TRAIN_BATCH_LOG_FILEPATH, WEIGHTS)
+            test_one_epoch(epoch, model, test_loader, device, AUXILIARY_LOSS_WEIGHT, TEST_EPOCH_LOG_FILEPATH, WEIGHTS) 
+            save_checkpoint(epoch, model, optimizer, CHECKPOINT_DIR)
+        print(f"\nTraining complete after {EPOCHS} epochs.")
